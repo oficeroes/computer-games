@@ -22,6 +22,35 @@ if sys.platform == "win32":
     except (AttributeError, OSError):
         pass
 
+# 启用 Windows 终端的 ANSI 颜色支持（旧版 cmd 需要）
+if os.name == "nt":
+    os.system("")
+
+# ANSI 颜色码：战斗界面的生命条与伤害数字使用
+COLOR_RED = "\033[91m"
+COLOR_GREEN = "\033[92m"
+COLOR_YELLOW = "\033[93m"
+COLOR_CYAN = "\033[96m"
+COLOR_RESET = "\033[0m"
+
+
+def colored(text, color):
+    """给文本上色，让终端里的关键信息更醒目"""
+    return f"{color}{text}{COLOR_RESET}"
+
+
+def hp_bar(current, maximum, length=20):
+    """带颜色的生命条，血量越低颜色越红"""
+    pct = max(0.0, min(1.0, current / max(1, maximum)))
+    filled = int(length * pct)
+    if pct <= 0.25:
+        color = COLOR_RED
+    elif pct <= 0.5:
+        color = COLOR_YELLOW
+    else:
+        color = COLOR_GREEN
+    return colored("█" * filled, color) + "░" * (length - filled)
+
 # ============================================================
 # ============================================================
 
@@ -953,7 +982,7 @@ def player_turn(player, companion, enemy):
         is_crit = crit_buff and random.random() < crit_buff["value"]
         if is_crit:
             dmg = int(dmg * 1.5)
-            print(f"\n  [攻击·暴击!!] 你攻击了 {enemy['name']}，暴击造成 {dmg} 点伤害！")
+            print(f"\n  [攻击·暴击!!] 你攻击了 {enemy['name']}，暴击造成 {colored(dmg, COLOR_RED)} 点伤害！")
         else:
             print(f"\n  [攻击] 你攻击了 {enemy['name']}，造成 {dmg} 点伤害！")
         enemy["hp"] -= dmg
@@ -1041,14 +1070,28 @@ def player_turn(player, companion, enemy):
 
     return None
 
-def enemy_turn(player, companion, enemy):
+def enemy_intent_text(enemy, attack):
+    """Return a short, human-readable preview of the enemy's next move."""
+    attack_type = attack.get("type", "physical")
+    damage = attack.get("damage", enemy["attack"])
+    labels = {
+        "physical": "普通攻击",
+        "magic": "魔法攻击（会削弱防御的作用）",
+        "poison": f"毒液攻击（命中后中毒 {attack.get('dot_turns', 3)} 回合）",
+        "burn": f"火焰攻击（命中后灼烧 {attack.get('dot_turns', 2)} 回合）",
+    }
+    move = labels.get(attack_type, "特殊攻击")
+    return f"敌人蓄势：{move}，基础伤害约 {damage}；目标可能是你或同伴。"
+
+
+def enemy_turn(player, companion, enemy, planned_attack=None):
     """敌人回合 - 支持物理/魔法/毒素攻击"""
     bonus_atk, bonus_def = apply_buffs(player)
 
     attacks = enemy.get("attacks", [{"type": "physical", "damage": enemy["attack"]}])
     if not attacks:
         attacks = [{"type": "physical", "damage": enemy["attack"]}]
-    atk = random.choice(attacks)
+    atk = planned_attack if planned_attack is not None else random.choice(attacks)
     atk_type = atk.get("type", "physical")
     atk_dmg = atk.get("damage", enemy["attack"])
 
@@ -1117,18 +1160,15 @@ def battle(player, companion, enemy):
         print(f"  生命: {max(0, enemy['hp'])}  |  攻击: {enemy['attack']}  |  防御: {enemy['defense']}")
         print(f"  \"{enemy['desc']}\"")
 
-        hp_bar_len = 20
-        enemy_hp_pct = max(0, enemy["hp"]) / max(1, enemy.get("_initial_hp", enemy["hp"]))
-        filled = int(hp_bar_len * min(1, enemy_hp_pct))
-        print(f"  生命: [{'#' * filled}{'.' * (hp_bar_len - filled)}]")
+        print(f"  生命: {hp_bar(max(0, enemy['hp']), max(1, enemy.get('_initial_hp', enemy['hp'])))}")
 
         print()
         divider("-", 50)
 
         bns_atk, bns_def = apply_buffs(player)
         print(f"  {player['class_data']['label']} {player['name']} | Lv.{player['level']} | {player['class']}")
-        print(f"  生命: {max(0, player['hp'])}/{player['max_hp']}  |  攻击: {player['attack']}{' +'+str(bns_atk) if bns_atk else ''}  |  防御: {player['defense']}{' +'+str(bns_def) if bns_def else ''}")
-        print(f"  同伴 {companion['name']}  |  生命: {max(0, companion['hp'])}/{companion['max_hp']}  |  攻击: {companion['attack']}")
+        print(f"  生命: {hp_bar(max(0, player['hp']), player['max_hp'])} {max(0, player['hp'])}/{player['max_hp']}  |  攻击: {player['attack']}{' +'+str(bns_atk) if bns_atk else ''}  |  防御: {player['defense']}{' +'+str(bns_def) if bns_def else ''}")
+        print(f"  同伴 {companion['name']}  |  生命: {hp_bar(max(0, companion['hp']), companion['max_hp'], 12)} {max(0, companion['hp'])}/{companion['max_hp']}  |  攻击: {companion['attack']}")
         if player["buffs"]:
             buff_names = []
             for b in player["buffs"]:
@@ -1176,6 +1216,9 @@ def battle(player, companion, enemy):
             print()
             press_enter()
 
+        enemy_attacks = enemy.get("attacks", [{"type": "physical", "damage": enemy["attack"]}])
+        enemy_intent = random.choice(enemy_attacks or [{"type": "physical", "damage": enemy["attack"]}])
+        print(f"  [行动预告] {enemy_intent_text(enemy, enemy_intent)}")
         result = player_turn(player, companion, enemy)
         if result == "escaped":
             print()
@@ -1203,7 +1246,7 @@ def battle(player, companion, enemy):
         draw_monster(enemy["name"])
         print(f"  >> {enemy['name']} <<  生命: {max(0, enemy['hp'])}")
         print()
-        enemy_turn(player, companion, enemy)
+        enemy_turn(player, companion, enemy, planned_attack=enemy_intent)
 
         if player["hp"] <= 0:
             revive_item = has_revive_item(player)
